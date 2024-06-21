@@ -1,0 +1,14 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation Template for S3 Bucket
+
+Resources:
+  MyS3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: 'my-s3-bucket-example'
+      AccessControl: Private
+
+Outputs:
+  S3BucketName:
+    Description: 'Name of the S3 bucket'
+    Value: Ref MyS3Bucket
