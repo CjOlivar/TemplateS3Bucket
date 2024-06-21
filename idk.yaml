@@ -7,8 +7,3 @@ Resources:
     Properties:
       BucketName: 'my-s3-bucket-example'
       AccessControl: Private
-
-Outputs:
-  S3BucketName:
-    Description: 'Name of the S3 bucket'
-    Value: Ref MyS3Bucket
