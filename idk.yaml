@@ -1,9 +1,41 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: CloudFormation Template for S3 Bucket
+Description: CloudFormation Template for an S3 Bucket
+
+Parameters:
+  AccountId:
+    Description: 'The AWS account ID'
+    Type: String
+
+  IamUserName:
+    Description: 'The IAM user name who will have access to the bucket'
+    Type: String
 
 Resources:
   MyS3Bucket:
     Type: 'AWS::S3::Bucket'
     Properties:
-      BucketName: 'my-s3-bucket-example'
+      BucketName: !Sub 'my-s3-bucket-example-${AWS::AccountId}-${AWS::Region}'
       AccessControl: Private
+
+  S3BucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref MyS3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+            Resource: !Sub 'arn:aws:s3:::${MyS3Bucket}/*'
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AccountId}:user/${IamUserName}'
+
+Outputs:
+  S3BucketName:
+    Description: 'Name of the S3 bucket'
+    Value: !Ref MyS3Bucket
+  S3BucketArn:
+    Description: 'ARN of the S3 bucket'
+    Value: !GetAtt MyS3Bucket.Arn
