@@ -6,11 +6,14 @@ Resources:
   MyS3Bucket:
     Type: 'AWS::S3::Bucket'
     Properties:
-      BucketName: !Sub 'my-s3-bucket-example-${AWS::AccountId}-${AWS::Region}'
+      BucketName: !Sub 'my-s3-bucket-example-${AWS::Region}-${AWS::AccountId}'
       AccessControl: Private
+      WebsiteConfiguration:  
+        IndexDocument: index.html
+        ErrorDocument: error.html
 
   S3User:
-    Type: AWS::IAM::User
+    Type: 'AWS::IAM::User'
     Properties:
       UserName: "S3-TestUser"
 
@@ -23,12 +26,20 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Effect: Allow
+          - Sid: PublicReadGetObject
+            Effect: Allow
             Action:
               - s3:put*
               - s3:get*
+              - s3:delete*
             Resource: "*"
-            
+
+  MyCloudFrontOriginAccessIdentity:
+    Type: 'AWS::CloudFront::CloudFrontOriginAccessIdentity'
+    Properties: 
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: Access Identity for S3 Bucket
+
   S3BucketPolicy:
     Type: 'AWS::S3::BucketPolicy'
     Properties:
@@ -37,12 +48,42 @@ Resources:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
+            Principal:
+              AWS: 
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:user/${S3User}'
+                - !GetAtt MyCloudFrontOriginAccessIdentity.IamArn
             Action:
               - 's3:GetObject'
               - 's3:PutObject'
+              - 's3:DeleteObject'
             Resource: !Sub 'arn:aws:s3:::${MyS3Bucket}/*'
-            Principal:
-              AWS: !Sub 'arn:aws:iam::${AccountId}:user/${IamUserName}'
+
+  MyCloudFrontDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt MyS3Bucket.DomainName
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${MyCloudFrontOriginAccessIdentity}'
+        Enabled: true
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin  
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          DefaultTTL: 86400
+          MaxTTL: 31536000
+          MinTTL: 0
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
 
 Outputs:
   S3BucketName:
@@ -51,3 +92,6 @@ Outputs:
   S3BucketArn:
     Description: 'ARN of the S3 bucket'
     Value: !GetAtt MyS3Bucket.Arn
+  WebsiteURL:
+    Value: !Sub 'http://${MyCloudFrontDistribution.DomainName}'
+    Description: URL for the static website
