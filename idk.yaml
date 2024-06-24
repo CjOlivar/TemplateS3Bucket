@@ -1,5 +1,19 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: CloudFormation Template for an S3 Bucket
+Description: CloudFormation Template for an S3 Bucket, CloudFront Distribution, CodePipeline, IAM Roles, and Lambda Function
+
+Parameters:
+  Certarn:
+    Type: String
+    Default: arn:aws:acm:us-east-1:680622018867:certificate/1457c295-03e0-4d44-ba6e-b3920fb8d50d
+    Description: Certificate arn in us-east-1
+  Aliases:
+    Type: String
+    Default: cjolivar.serveraccess.link
+    Description: This is an alias
+  HostedzoneID:
+    Type: String
+    Default: Z0206762ADO5JH04R7F7
+    Description: This is an HostedZoneId of serveeracces.link domain
 
 Resources:
 
@@ -8,8 +22,8 @@ Resources:
     Properties:
       BucketName: !Sub 'my-s3-bucket-example-${AWS::Region}-${AWS::AccountId}'
       AccessControl: Private
-      WebsiteConfiguration:  
-        IndexDocument: index.html
+      WebsiteConfiguration:
+        IndexDocument: samplehtml.html
         ErrorDocument: error.html
 
   S3User:
@@ -21,22 +35,20 @@ Resources:
     Type: AWS::IAM::ManagedPolicy
     Properties:
       Users:
-        - !Ref S3User    
-      ManagedPolicyName: S3UserPolicyName
+        - !Ref S3User
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: PublicReadGetObject
-            Effect: Allow
+          - Effect: Allow
             Action:
-              - s3:put*
-              - s3:get*
-              - s3:delete*
-            Resource: "*"
+              - s3:PutObject
+              - s3:GetObject
+              - s3:DeleteObject
+            Resource: !GetAtt MyS3Bucket.Arn
 
   MyCloudFrontOriginAccessIdentity:
     Type: 'AWS::CloudFront::CloudFrontOriginAccessIdentity'
-    Properties: 
+    Properties:
       CloudFrontOriginAccessIdentityConfig:
         Comment: Access Identity for S3 Bucket
 
@@ -49,28 +61,34 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              AWS: 
-                - !Sub 'arn:aws:iam::${AWS::AccountId}:user/${S3User}'
-                - !GetAtt MyCloudFrontOriginAccessIdentity.IamArn
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${S3User}'
             Action:
               - 's3:GetObject'
               - 's3:PutObject'
               - 's3:DeleteObject'
+            Resource: !Sub 'arn:aws:s3:::${MyS3Bucket}/*'
+          - Effect: Allow
+            Principal:
+              CanonicalUser: !GetAtt MyCloudFrontOriginAccessIdentity.S3CanonicalUserId
+            Action:
+              - 's3:GetObject'
             Resource: !Sub 'arn:aws:s3:::${MyS3Bucket}/*'
 
   MyCloudFrontDistribution:
     Type: 'AWS::CloudFront::Distribution'
     Properties:
       DistributionConfig:
+        Aliases: 
+          - !Ref Aliases  
         Origins:
           - Id: S3Origin
-            DomainName: !GetAtt MyS3Bucket.DomainName
+            DomainName: !GetAtt MyS3Bucket.RegionalDomainName
             S3OriginConfig:
               OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${MyCloudFrontOriginAccessIdentity}'
         Enabled: true
-        DefaultRootObject: index.html
+        DefaultRootObject: samplehtml.html
         DefaultCacheBehavior:
-          TargetOriginId: S3Origin  
+          TargetOriginId: S3Origin
           ViewerProtocolPolicy: redirect-to-https
           AllowedMethods:
             - GET
@@ -82,8 +100,127 @@ Resources:
           DefaultTTL: 86400
           MaxTTL: 31536000
           MinTTL: 0
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
         ViewerCertificate:
-          CloudFrontDefaultCertificate: true
+          AcmCertificateArn: !Ref Certarn 
+          MinimumProtocolVersion: TLSv1.2_2021
+          SslSupportMethod: sni-only
+
+  MyRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedzoneID
+      Name: !Ref Aliases
+      Type: CNAME
+      TTL: '300'
+      ResourceRecords:
+        - !GetAtt MyCloudFrontDistribution.DomainName
+
+
+  CodePipelineRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 'codepipeline.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'CodePipelinePolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:*'
+                  - 'codebuild:*'
+                  - 'codedeploy:*'
+                  - 'lambda:*'
+                  - 'iam:PassRole'
+                Resource: '*'
+
+
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 'lambda.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'LambdaExecutionPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+
+
+  MyLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: 'MyLambdaFunction'
+      Handler: 'index.handler'
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              print("Hello from Lambda!")
+              return "Success"
+      Runtime: 'python3.9'
+
+
+  ArtifactBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'codepipeline-artifacts-${AWS::Region}-${AWS::AccountId}'
+
+
+  MyPipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: S3
+                Version: '1'
+              Configuration:
+                S3Bucket: 'MyS3Bucket'
+                S3ObjectKey: 'index.html'
+              OutputArtifacts:
+                - Name: SourceOutput
+        - Name: Deploy
+          Actions:
+            - Name: DeployAction
+              ActionTypeId:
+                Category: Invoke
+                Owner: AWS
+                Provider: Lambda  
+                Version: '1'
+              Configuration:
+                FunctionName: !Ref MyLambdaFunction
+              InputArtifacts:
+                - Name: SourceOutput
 
 Outputs:
   S3BucketName:
@@ -95,3 +232,9 @@ Outputs:
   WebsiteURL:
     Value: !Sub 'http://${MyCloudFrontDistribution.DomainName}'
     Description: URL for the static website
+  LambdaFunctionName:
+    Description: 'Name of the Lambda function'
+    Value: !Ref MyLambdaFunction
+  PipelineName:
+    Description: 'Name of the CodePipeline'
+    Value: !Ref MyPipeline
