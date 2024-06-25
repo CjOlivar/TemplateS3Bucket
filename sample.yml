@@ -1,0 +1,334 @@
+# Name : Static websites - S3 + CloudFront
+# Version : 1.0.0
+# Description : This stack deploys required resources for static websites stored in s3 and served by CloudFront.
+#
+# ----------------------------------------------------------------------------------------------------------------------
+# Maintenance History
+# -------------------
+# Name            Date        Version     C/R                             Description
+# ----------------------------------------------------------------------------------------------------------------------
+# Antonio Olivar    2024-05-17  1.0.0                                       Initial version 
+#
+# ----------------------------------------------------------------------------------------------------------------------
+# Resources:
+# 1. Codepipeline + Actions
+# 2. S3 Bucket + bucket policy
+# 3. Cloudfront distribution
+# 4. Cloudfront access control
+# 5. Route53 dns record
+#
+# Dependencies:
+# 1. S3 buckets for codepipeline working and artifacts files
+# 2. Shared IAM role for Codepipeline
+# 3. Lambda Function - CloudfrontInvalidationFunction
+# 4. Shared S3 KMS Key Id Arn
+# 5. ACM certificate in us-east-1
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >
+  This stack deploys required resources for static websites stored in s3 and served by CloudFront.
+
+Parameters:
+  environment:
+    Description: The working environment
+    Type: String
+    Default: 'nonProd'
+    AllowedValues: [ "nonProd", "prod" ]
+  CodeBuildRoleArn: 
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: '/cf-output/nonProd/shared/iam/CodeBuildRole/Arn'
+    Description: Param store location for the CodeBuild role Arn
+  CodePipelineRoleArn: 
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: '/cf-output/nonProd/shared/iam/CodePipelineRole/Arn'
+    Description: Param store location for the CodePipeline role Arn
+  CloudfrontInvalidationFunction:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: '/cf-output/nonProd/shared/Lambda/InvalidationFunctionName'
+    Description: Param store location for the Lamba Function of CloudFront invalidation
+  FullRepositoryId: 
+    Description: The working environment
+    Type: String
+    Default: 'kaplanaustraliatesting/code-pipelines-connection-testing'
+    Description: Bitbucket full repository Id
+
+Mappings:
+  prod:
+    static:
+      WorkingS3Bucket: "codepipeline-working-files-ap-southeast-2-635913785584" #to update
+      BucketName: "static.kaplan.edu.au"
+      SiteFQDN: "static.kaplan.edu.au"
+      acmCertArn: "arn:aws:acm:us-east-1:635913785584:certificate/3267925b-0e05-4eec-b90d-3f635864f157" #to update
+      DNSHostedZone: "kaplan.edu.au."
+      HostedZoneId: "Z2FDTNDATAQYW2" #toupdate
+  nonProd:
+    static:
+      WorkingS3Bucket: "codepipeline-working-files-ap-southeast-2-635913785584"
+      BucketName: "static.nonprod.aws.kaplan.edu.au"
+      SiteFQDN: "static.nonprod.aws.kaplan.edu.au"
+      acmCertArn: "arn:aws:acm:us-east-1:635913785584:certificate/3267925b-0e05-4eec-b90d-3f635864f157"
+      DNSHostedZone: "nonprod.aws.kaplan.edu.au."
+      HostedZoneId: "Z2FDTNDATAQYW2"
+      S3KMSKeyIdArn: "arn:aws:kms:ap-southeast-2:635913785584:key/de5ed0c2-f1fb-41a0-b3ab-577c2000ea7c"
+      ConnectionArn: "arn:aws:codestar-connections:ap-southeast-2:635913785584:connection/6519d7ad-3773-45b4-bbd5-4bdb3c66825a"
+      BranchName: "feature/codebuild"
+
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+    Metadata:
+      Comment: Bucket name to store webfiles
+    Properties:
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketName: !FindInMap [ !Ref environment, static, SiteFQDN ]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: 'aws:kms'
+              KMSMasterKeyID: !FindInMap [ !Ref environment, static, S3KMSKeyIdArn ]
+            BucketKeyEnabled: true
+      Tags:
+        - Key: accessLogging
+          Value: true
+  Cloudfront:
+    Type: AWS::CloudFront::Distribution
+    Metadata:
+      Comment: !Sub 'CF distribution with an S3 origin - ${AWS::StackName}'
+    DependsOn:
+      - CloudFrontOriginAccessControl
+      - Bucket
+    Properties:
+      DistributionConfig:
+        Comment: !Sub 'CF distribution with an S3 origin - ${AWS::StackName}'
+        DefaultCacheBehavior:
+          OriginRequestPolicyId: '88a5eaf4-2fd4-4709-b370-b4c650ea3fcf' #Managed-CORS-S3Origin"
+          CachePolicyId: '658327ea-f89d-4fab-a63d-7e88639e58f6' #Managed-Caching-Optimized
+          ResponseHeadersPolicyId: 'eaab4381-ed33-4a86-88ca-d9558dc6cd63' #Managed-CORS-with-preflight-and-SecurityHeadersPolicy
+          AllowedMethods:
+            - HEAD
+            - GET
+          CachedMethods:
+            - HEAD
+            - GET
+          Compress: false
+          DefaultTTL: 86400
+          ForwardedValues:
+            QueryString: true
+            Cookies:
+              Forward: none
+            Headers:
+              - Origin
+          MaxTTL: 31536000
+          MinTTL: 86400
+          TargetOriginId:
+            Fn::Join:
+              - ''
+              - - 's3-origin-'
+                - !FindInMap [ !Ref environment, static, SiteFQDN ]
+          ViewerProtocolPolicy: redirect-to-https
+        DefaultRootObject: index.html
+        Enabled: true
+        HttpVersion: http2
+        IPV6Enabled: false
+        Origins:
+          - DomainName: 
+              Fn::Join:
+                - ''
+                - - !FindInMap [ !Ref environment, static, SiteFQDN ]
+                  - '.s3.amazonaws.com' 
+            Id:
+              Fn::Join:
+                - ''
+                - - 's3-origin-'
+                  - !FindInMap [ !Ref environment, static, SiteFQDN ]
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+            OriginAccessControlId: !Ref CloudFrontOriginAccessControl
+        PriceClass: PriceClass_All
+        Aliases:
+          - !FindInMap [ !Ref environment, static, SiteFQDN ]
+        ViewerCertificate:
+          AcmCertificateArn: !FindInMap [ !Ref environment, static, acmCertArn ]
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+  
+  CloudFrontOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        SigningBehavior: "always"
+        Description: ""
+        SigningProtocol: "sigv4"
+        OriginAccessControlOriginType: "s3"
+        Name: !Sub 'Kaplan-OriginAccessControl-${AWS::StackName}'
+  
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Metadata:
+      Comment: Bucket policy to allow cloudfront to access the bucket
+    DependsOn:
+      - CloudFrontOriginAccessControl
+      - Cloudfront
+      - Bucket
+    Properties:
+      Bucket: !FindInMap [ !Ref environment, static, SiteFQDN ]
+      PolicyDocument:
+        Statement:
+          - Sid: DenyUnencryptedConnections
+            Action:
+              - 's3:*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+            Effect: Deny
+            Principal: '*'
+            Resource:
+              Fn::Join:
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !FindInMap [ !Ref environment, static, SiteFQDN ]
+                  - '/*'
+          - Sid: DenyCloudFrontServicePrincipalToBuildDir
+            Effect: Deny
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: 's3:GetObject'
+            Resource:
+              Fn::Join:
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !FindInMap [ !Ref environment, static, SiteFQDN ]
+                  - '/.build/*'
+            Condition:
+              StringEquals:
+                'AWS:SourceArn': !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Cloudfront}'
+          - Sid: AllowCloudFrontServicePrincipal
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: 's3:GetObject'
+            Resource:
+              Fn::Join:
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !FindInMap [ !Ref environment, static, SiteFQDN ]
+                  - '/*'
+            Condition:
+              StringEquals:
+                'AWS:SourceArn': !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Cloudfront}'
+  
+  Codebuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: StaticWebsiteTesting
+      Description: This is a test project
+      ServiceRole: !Ref CodeBuildRoleArn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+      Source:
+        Type: CODEPIPELINE
+
+
+  Pipeline:
+    DependsOn: 
+      - Cloudfront
+      - Codebuild
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Type: S3
+        Location: !FindInMap [ !Ref environment, static, WorkingS3Bucket ]
+      DisableInboundStageTransitions: []
+      Name: !Sub 'Pipeline-${AWS::StackName}'
+      RoleArn: !Ref CodePipelineRoleArn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: BitBucket
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              Configuration:
+                BranchName: !FindInMap [ !Ref environment, static, BranchName ]
+                ConnectionArn: !FindInMap [ !Ref environment, static, ConnectionArn ]
+                FullRepositoryId: !Ref FullRepositoryId
+                OutputArtifactFormat: "CODE_ZIP"
+              OutputArtifacts:
+                - Name: TemplateSource
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: CodeBuild
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref Codebuild
+              InputArtifacts:
+                   - Name: TemplateSource
+              OutputArtifacts:
+                   - Name: BuildArtifact
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: S3Bucket
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: S3
+                Version: '1'
+              Configuration:
+                BucketName: !FindInMap [ !Ref environment, static, SiteFQDN ]
+                Extract: 'true'
+              InputArtifacts:
+                - Name: BuildArtifact
+              RunOrder: 1
+              Region: ap-southeast-2
+        - Name: Invalidation
+          Actions:
+            - Name: CloudfrontCache
+              ActionTypeId:
+                Category: Invoke
+                Owner: AWS
+                Provider: Lambda
+                Version: '1'
+              Configuration:
+                FunctionName: !Ref CloudfrontInvalidationFunction
+                UserParameters:
+                  Fn::Join:
+                    - ''
+                    - - '{"distributionId": "'
+                      - !GetAtt Cloudfront.Id
+                      - '", "objectPaths": ["/*"]}'
+              InputArtifacts: []
+              OutputArtifacts: []
+              RunOrder: 1
+              Region: ap-southeast-2
+
+  DNSName:
+    Type: AWS::Route53::RecordSetGroup
+    DependsOn: Cloudfront
+    Properties:
+      HostedZoneName: !FindInMap [ !Ref environment, static, DNSHostedZone ]
+      RecordSets:
+        - Name: !FindInMap [ !Ref environment, static, SiteFQDN ]
+          Type: A
+          AliasTarget:
+            HostedZoneId: !FindInMap [ !Ref environment, static, HostedZoneId ]
+            DNSName:
+              Fn::GetAtt:
+                - Cloudfront
+                - DomainName
