@@ -1,0 +1,23 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation Template to create IAM User
+
+Resources:
+  S3User:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: "S3-TestUser"
+      
+  S3UserPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Users:
+        - !Ref S3User    
+      ManagedPolicyName: S3UserPolicyName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:put*
+              - s3:get*
+            Resource: "*"
