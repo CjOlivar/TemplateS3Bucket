@@ -1,21 +1,86 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: CloudFormation Template for an S3 Bucket
+Description: CloudFormation Template with an S3 Bucket, CloudFront Distribution, CodePipeline, IAM Roles, Lambda Function, and CloudFront Invalidation
 
 Parameters:
-  AccountId:
-    Description: 'The AWS account ID'
+  Certarn:
     Type: String
+    Default: arn:aws:acm:us-east-1:680622018867:certificate/1457c295-03e0-4d44-ba6e-b3920fb8d50d
+    Description: Certificate arn in us-east-1
+  Aliases:
+    Type: String
+    Default: cjolivar.serveraccess.link
+    Description: This is an alias
+  HostedzoneID:
+    Type: String
+    Default: Z0206762ADO5JH04R7F7
+    Description: This is a HostedZoneId of serveraccess.link domain
+  SourceObjectKey:
+    Type: String
+    Default: index.html
+    Description: Key of the object in the S3 bucket containing the source code
+  Environment:
+    Description: Environment
+    Type: String
+    Default: "nonProd"
+    AllowedValues:
+      - "nonProd"
+      - "prod"
+  FullRepositoryId:
+    Type: String
+    Description: Full repository ID (e.g., user/repository-name)
 
-  IamUserName:
-    Description: 'The IAM user name who will have access to the bucket'
-    Type: String
+Mappings:
+  prod:
+    static:
+      BranchName: main  
+      ConnectionArn: arn:aws:codestar-connections:ap-southeast-1:680622018867:connection/ce63c829-a2dc-43f8-a67b-0f8d1e1491e1
+      SiteFQDN: prod.mywebsite.com
+  nonProd:
+    static:
+      BranchName: dev
+      ConnectionArn: arn:aws:codestar-connections:ap-southeast-1:680622018867:connection/ce63c829-a2dc-43f8-a67b-0f8d1e1491e1
+      SiteFQDN: dev.mywebsite.com
 
 Resources:
   MyS3Bucket:
     Type: 'AWS::S3::Bucket'
     Properties:
-      BucketName: !Sub 'my-s3-bucket-example-${AWS::AccountId}-${AWS::Region}'
+      BucketName: !Sub 'my-s3-bucket-example-${AWS::Region}-${AWS::AccountId}'
       AccessControl: Private
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      NotificationConfiguration:
+        EventBridgeConfiguration: 
+          EventBridgeEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  S3User:
+    Type: 'AWS::IAM::User'
+    Properties:
+      UserName: "S3-TestUser"
+
+  S3UserPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Users:
+        - !Ref S3User
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:DeleteObject
+            Resource: !Sub 'arn:aws:s3:::${MyS3Bucket}/*'
+
+  MyCloudFrontOriginAccessIdentity:
+    Type: 'AWS::CloudFront::CloudFrontOriginAccessIdentity'
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: Access Identity for S3 Bucket
 
   S3BucketPolicy:
     Type: 'AWS::S3::BucketPolicy'
@@ -25,13 +90,234 @@ Resources:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${S3User}'
             Action:
               - 's3:GetObject'
               - 's3:PutObject'
+              - 's3:DeleteObject'
             Resource: !Sub 'arn:aws:s3:::${MyS3Bucket}/*'
+          - Effect: Allow
             Principal:
-              AWS: !Sub 'arn:aws:iam::${AccountId}:user/${IamUserName}'
+              CanonicalUser: !GetAtt MyCloudFrontOriginAccessIdentity.S3CanonicalUserId
+            Action:
+              - 's3:GetObject'
+            Resource: !Sub 'arn:aws:s3:::${MyS3Bucket}/*'
 
+  MyCloudFrontDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        Aliases: 
+          - !Ref Aliases  
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt MyS3Bucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${MyCloudFrontOriginAccessIdentity}'
+        Enabled: true
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          DefaultTTL: 86400
+          MaxTTL: 31536000
+          MinTTL: 0
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+        ViewerCertificate:
+          AcmCertificateArn: !Ref Certarn 
+          MinimumProtocolVersion: TLSv1.2_2021
+          SslSupportMethod: sni-only
+
+  MyRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedzoneID
+      Name: !Ref Aliases
+      Type: CNAME
+      TTL: '300'
+      ResourceRecords:
+        - !GetAtt MyCloudFrontDistribution.DomainName
+
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+      Path: /
+      Policies:
+        - PolicyName: AccessPolicyCodepipeline
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'codepipeline:PutJobFailureResult'
+                  - 'codepipeline:PutJobSuccessResult'
+                  - 'cloudfront:CreateInvalidation' 
+                Resource: '*'
+
+  CodePipelineRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 'codepipeline.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'CodePipelinePolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow 
+                Action:
+                  - 's3:*'
+                  - 'codebuild:*'
+                  - 'codedeploy:*'
+                  - 'lambda:*'
+                  - 'iam:PassRole'  
+                Resource: '*'
+
+  InvalidationFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: 'InvalidationFunction'
+      Handler: 'index.lambda_handler'
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+              import json
+              import boto3
+
+              code_pipeline = boto3.client("codepipeline")
+              cloud_front = boto3.client("cloudfront")
+
+              def lambda_handler(event, context):
+                  job_id = event["CodePipeline.job"]["id"]
+                  try:
+                      user_params = json.loads(
+                          event["CodePipeline.job"]
+                              ["data"]
+                              ["actionConfiguration"]
+                              ["configuration"]
+                              ["UserParameters"]
+                      )
+                      cloud_front.create_invalidation(
+                          DistributionId=user_params["DistributionId"],
+                          InvalidationBatch={
+                              "Paths": {
+                                  "Quantity": len(user_params["objectPaths"]),
+                                  "Items": user_params["objectPaths"],
+                              },
+                              "CallerReference": event["CodePipeline.job"]["id"],
+                          },
+                      )
+                  except Exception as e:
+                      code_pipeline.put_job_failure_result(
+                          jobId=job_id,
+                          failureDetails={
+                              "type": "JobFailed",
+                              "message": str(e),
+                          },
+                      )
+                  else:
+                      code_pipeline.put_job_success_result(
+                          jobId=job_id,
+                      )
+      Runtime: python3.8
+      Description: Lambda function to invalidate cache files in CloudFront distributions
+      MemorySize: 128
+      Timeout: 600
+      Environment:
+        Variables: 
+          CLOUDFRONT_DISTRIBUTION_ID: !Ref MyCloudFrontDistribution
+          PYTHONWARNINGS: ignore
+
+  OutputInvalidationFunction:
+    Type: AWS::SSM::Parameter   
+    Properties:
+      Description: Invalidation Lambda Function Name
+      Name: !Sub '/cf-output/${Environment}/shared/Lambda/InvalidationFunctionName'
+      Type: String
+      Value: !Ref InvalidationFunction
+
+  ArtifactBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'codepipeline-artifacts-${AWS::Region}-${AWS::AccountId}'
+
+  MyPipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: BitBucket
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              Configuration:
+                BranchName: !FindInMap [ !Ref Environment, static, BranchName ]
+                ConnectionArn: !FindInMap [ !Ref Environment, static, ConnectionArn ]
+                FullRepositoryId: !Ref FullRepositoryId
+                OutputArtifactFormat: "CODE_ZIP"
+              OutputArtifacts:
+                - Name: TemplateSource
+        - Name: Deploy
+          Actions:
+            - Name: S3Bucket
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: S3
+                Version: '1'
+              Configuration:
+                BucketName: !Ref MyS3Bucket
+                Extract: 'true'
+              InputArtifacts:
+                - Name: TemplateSource
+              RunOrder: 1
+              Region: ap-southeast-1
+        - Name: InvalidateCache
+          Actions:
+            - Name: InvalidateCacheAction
+              ActionTypeId:
+                Category: Invoke
+                Owner: AWS
+                Provider: Lambda
+                Version: '1'
+              Config  uration:
+                FunctionName: !Ref InvalidationFunction
+                UserParameters: !Sub '{"DistributionId": "${MyCloudFrontDistribution.Id}", "objectPaths":["/*"]}'
+                
 Outputs:
   S3BucketName:
     Description: 'Name of the S3 bucket'
@@ -39,3 +325,12 @@ Outputs:
   S3BucketArn:
     Description: 'ARN of the S3 bucket'
     Value: !GetAtt MyS3Bucket.Arn
+  WebsiteURL:
+    Value: !Sub 'http://${MyCloudFrontDistribution.DomainName}'
+    Description: URL for the static website
+  PipelineName:
+    Description: 'Name of the CodePipeline' 
+    Value: !Ref MyPipeline
+  LambdaExecutionRoleName:
+    Description: 'Name of LambdaExecutionRole'
+    Value: !Ref LambdaExecutionRole

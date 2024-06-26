@@ -1,0 +1,6 @@
+AWS configure
+AWS S3 cp file S3 location
+dir - list files on current directory
+cd - change directory
+aws s3 rm - is to remove files
+static website using cloud front and s3
