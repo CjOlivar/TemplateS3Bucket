@@ -18,28 +18,17 @@ Parameters:
     Type: String
     Default: index.html
     Description: Key of the object in the S3 bucket containing the source code
-  Environment:
-    Description: Environment
-    Type: String
-    Default: "nonProd"
-    AllowedValues:
-      - "nonProd"
-      - "prod"
   FullRepositoryId:
     Type: String
     Description: Full repository ID (e.g., user/repository-name)
-
-Mappings:
-  prod:
-    static:
-      BranchName: main  
-      ConnectionArn: arn:aws:codestar-connections:ap-southeast-1:680622018867:connection/ce63c829-a2dc-43f8-a67b-0f8d1e1491e1
-      SiteFQDN: prod.mywebsite.com
-  nonProd:
-    static:
-      BranchName: dev
-      ConnectionArn: arn:aws:codestar-connections:ap-southeast-1:680622018867:connection/ce63c829-a2dc-43f8-a67b-0f8d1e1491e1
-      SiteFQDN: dev.mywebsite.com
+  ConnectionArnId:
+    Type: String
+    Default: arn:aws:codestar-connections:ap-southeast-1:680622018867:connection/ce63c829-a2dc-43f8-a67b-0f8d1e1491e1
+    Description: This is the ConnectionArn
+  BranchName:
+    Type: String
+    Default: main
+    Description: This is the BranchName
 
 Resources:
   MyS3Bucket:
@@ -197,7 +186,8 @@ Resources:
                   - 'codebuild:*'
                   - 'codedeploy:*'
                   - 'lambda:*'
-                  - 'iam:PassRole'  
+                  - 'iam:PassRole' 
+                  - 'codestar-connections:UseConnection'
                 Resource: '*'
 
   InvalidationFunction:
@@ -249,19 +239,7 @@ Resources:
       Runtime: python3.8
       Description: Lambda function to invalidate cache files in CloudFront distributions
       MemorySize: 128
-      Timeout: 600
-      Environment:
-        Variables: 
-          CLOUDFRONT_DISTRIBUTION_ID: !Ref MyCloudFrontDistribution
-          PYTHONWARNINGS: ignore
-
-  OutputInvalidationFunction:
-    Type: AWS::SSM::Parameter   
-    Properties:
-      Description: Invalidation Lambda Function Name
-      Name: !Sub '/cf-output/${Environment}/shared/Lambda/InvalidationFunctionName'
-      Type: String
-      Value: !Ref InvalidationFunction
+      Timeout: 600``
 
   ArtifactBucket:
     Type: 'AWS::S3::Bucket'
@@ -285,8 +263,8 @@ Resources:
                 Provider: CodeStarSourceConnection
                 Version: '1'
               Configuration:
-                BranchName: !FindInMap [ !Ref Environment, static, BranchName ]
-                ConnectionArn: !FindInMap [ !Ref Environment, static, ConnectionArn ]
+                BranchName: !Ref BranchName
+                ConnectionArn: !Ref ConnectionArnId 
                 FullRepositoryId: !Ref FullRepositoryId
                 OutputArtifactFormat: "CODE_ZIP"
               OutputArtifacts:
@@ -314,7 +292,7 @@ Resources:
                 Owner: AWS
                 Provider: Lambda
                 Version: '1'
-              Config  uration:
+              Configuration:
                 FunctionName: !Ref InvalidationFunction
                 UserParameters: !Sub '{"DistributionId": "${MyCloudFrontDistribution.Id}", "objectPaths":["/*"]}'
                 
