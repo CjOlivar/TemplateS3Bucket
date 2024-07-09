@@ -29,6 +29,10 @@ Parameters:
     Type: String
     Default: main
     Description: This is the BranchName
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
 
 Resources:
   MyS3Bucket:
@@ -138,6 +142,38 @@ Resources:
       ResourceRecords:
         - !GetAtt MyCloudFrontDistribution.DomainName
 
+  MyInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      ImageId: ami-06d753822bd94c64e
+      Tags:
+        - Key: Name
+          Value: MySSMInstance
+
+  SSMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: '/'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  SSMInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: '/'
+      Roles:
+        - !Ref SSMRole
+
   LambdaExecutionRole:
     Type: 'AWS::IAM::Role'
     Properties:
@@ -239,7 +275,7 @@ Resources:
       Runtime: python3.8
       Description: Lambda function to invalidate cache files in CloudFront distributions
       MemorySize: 128
-      Timeout: 600``
+      Timeout: 600
 
   ArtifactBucket:
     Type: 'AWS::S3::Bucket'
@@ -312,3 +348,9 @@ Outputs:
   LambdaExecutionRoleName:
     Description: 'Name of LambdaExecutionRole'
     Value: !Ref LambdaExecutionRole
+  InstanceProfile:
+    Description: Instance profile to be used on EC2 instances for SSM
+    Value: !Ref SSMInstanceProfile
+  InstanceId:
+    Description: The Instance ID
+    Value: !Ref MyInstance
