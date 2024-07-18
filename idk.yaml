@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: CloudFormation Template with an S3 Bucket, CloudFront Distribution, CodePipeline, IAM Roles, Lambda Function, and CloudFront Invalidation
+Description: CloudFormation Template with an S3 Bucket, CloudFront Distribution, CodePipeline, IAM Roles, Lambda Function, CloudFront Invalidation, and SSM Automation for AMI creation
 
 Parameters:
   Certarn:
@@ -48,33 +48,18 @@ Resources:
           EventBridgeEnabled: true
       VersioningConfiguration:
         Status: Enabled
+      Tags:
+        - Key: AppManagerCFNStackKey
+          Value: "WebsiteRedesign"
 
-  S3User:
-    Type: 'AWS::IAM::User'
+  ArtifactBucket:
+    Type: 'AWS::S3::Bucket'
     Properties:
-      UserName: "S3-TestUser"
-
-  S3UserPolicy:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      Users:
-        - !Ref S3User
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Action:
-              - s3:PutObject
-              - s3:GetObject
-              - s3:DeleteObject
-            Resource: !Sub 'arn:aws:s3:::${MyS3Bucket}/*'
-
-  MyCloudFrontOriginAccessIdentity:
-    Type: 'AWS::CloudFront::CloudFrontOriginAccessIdentity'
-    Properties:
-      CloudFrontOriginAccessIdentityConfig:
-        Comment: Access Identity for S3 Bucket
-
+      BucketName: !Sub 'codepipeline-artifacts-${AWS::Region}-${AWS::AccountId}'
+      Tags:
+        - Key: AppManagerCFNStackKey
+          Value: "WebsiteRedesign"
+  
   S3BucketPolicy:
     Type: 'AWS::S3::BucketPolicy'
     Properties:
@@ -95,6 +80,29 @@ Resources:
               CanonicalUser: !GetAtt MyCloudFrontOriginAccessIdentity.S3CanonicalUserId
             Action:
               - 's3:GetObject'
+            Resource: !Sub 'arn:aws:s3:::${MyS3Bucket}/*'
+
+  S3User:
+    Type: 'AWS::IAM::User'
+    Properties:
+      UserName: "S3-TestUser"
+      Tags:
+        - Key: AppManagerCFNStackKey
+          Value: "WebsiteRedesign"
+
+  S3UserPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Users:
+        - !Ref S3User
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:DeleteObject
             Resource: !Sub 'arn:aws:s3:::${MyS3Bucket}/*'
 
   MyCloudFrontDistribution:
@@ -131,6 +139,15 @@ Resources:
           AcmCertificateArn: !Ref Certarn 
           MinimumProtocolVersion: TLSv1.2_2021
           SslSupportMethod: sni-only
+      Tags:
+        - Key: AppManagerCFNStackKey
+          Value: "WebsiteRedesign"
+
+  MyCloudFrontOriginAccessIdentity:
+    Type: 'AWS::CloudFront::CloudFrontOriginAccessIdentity'
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: Access Identity for S3 Bucket
 
   MyRecordSet:
     Type: AWS::Route53::RecordSet
@@ -152,6 +169,9 @@ Resources:
       Tags:
         - Key: Name
           Value: MySSMInstance
+        - Key: AppManagerCFNStackKey
+          Value: "WebsiteRedesign"
+
 
   SSMRole:
     Type: 'AWS::IAM::Role'
@@ -166,6 +186,9 @@ Resources:
       Path: '/'
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: AppManagerCFNStackKey
+          Value: "WebsiteRedesign"
 
   SSMInstanceProfile:
     Type: 'AWS::IAM::InstanceProfile'
@@ -173,6 +196,42 @@ Resources:
       Path: '/'
       Roles:
         - !Ref SSMRole
+
+  CodePipelineRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: CodePipelinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${ArtifactBucket}/*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${MyS3Bucket}/*'
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                Resource: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${MyCloudFrontDistribution}'
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: '*'
 
   LambdaExecutionRole:
     Type: 'AWS::IAM::Role'
@@ -183,47 +242,15 @@ Resources:
           - Effect: Allow
             Principal:
               Service: lambda.amazonaws.com
-            Action:
-              - 'sts:AssumeRole'
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
-      Path: /
-      Policies:
-        - PolicyName: AccessPolicyCodepipeline
-          PolicyDocument:
-            Version: 2012-10-17
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'codepipeline:PutJobFailureResult'
-                  - 'codepipeline:PutJobSuccessResult'
-                  - 'cloudfront:CreateInvalidation' 
-                Resource: '*'
-
-  CodePipelineRole:
-    Type: 'AWS::IAM::Role'
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: 'codepipeline.amazonaws.com'
             Action: 'sts:AssumeRole'
       Policies:
-        - PolicyName: 'CodePipelinePolicy'
+        - PolicyName: LambdaCloudFrontInvalidationPolicy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow 
+              - Effect: Allow
                 Action:
-                  - 's3:*'
-                  - 'codebuild:*'
-                  - 'codedeploy:*'
-                  - 'lambda:*'
-                  - 'iam:PassRole' 
-                  - 'codestar-connections:UseConnection'
+                  - cloudfront:CreateInvalidation
                 Resource: '*'
 
   InvalidationFunction:
@@ -277,11 +304,6 @@ Resources:
       MemorySize: 128
       Timeout: 600
 
-  ArtifactBucket:
-    Type: 'AWS::S3::Bucket'
-    Properties:
-      BucketName: !Sub 'codepipeline-artifacts-${AWS::Region}-${AWS::AccountId}'
-
   MyPipeline:
     Type: 'AWS::CodePipeline::Pipeline'
     Properties:
@@ -292,50 +314,74 @@ Resources:
       Stages:
         - Name: Source
           Actions:
-            - Name: BitBucket
+            - Name: Source
               ActionTypeId:
                 Category: Source
                 Owner: AWS
                 Provider: CodeStarSourceConnection
-                Version: '1'
+                Version: 1
               Configuration:
-                BranchName: !Ref BranchName
-                ConnectionArn: !Ref ConnectionArnId 
+                ConnectionArn: !Ref ConnectionArnId
                 FullRepositoryId: !Ref FullRepositoryId
-                OutputArtifactFormat: "CODE_ZIP"
+                BranchName: !Ref BranchName
+                OutputArtifactFormat: CODE_ZIP
               OutputArtifacts:
-                - Name: TemplateSource
+                - Name: SourceArtifact
         - Name: Deploy
           Actions:
-            - Name: S3Bucket
+            - Name: Deploy
               ActionTypeId:
                 Category: Deploy
                 Owner: AWS
                 Provider: S3
-                Version: '1'
+                Version: 1
               Configuration:
                 BucketName: !Ref MyS3Bucket
-                Extract: 'true'
+                Extract: true
               InputArtifacts:
-                - Name: TemplateSource
-              RunOrder: 1
-              Region: ap-southeast-1
+                - Name: SourceArtifact
         - Name: InvalidateCache
           Actions:
-            - Name: InvalidateCacheAction
+            - Name: InvalidateCache
               ActionTypeId:
                 Category: Invoke
                 Owner: AWS
                 Provider: Lambda
-                Version: '1'
+                Version: 1
               Configuration:
                 FunctionName: !Ref InvalidationFunction
-                UserParameters: !Sub '{"DistributionId": "${MyCloudFrontDistribution.Id}", "objectPaths":["/*"]}'
-                
+              RunOrder: 2
+              InputArtifacts:
+                - Name: SourceArtifact
+
+  AutomationServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ssm.amazonaws.com
+          Action: sts:AssumeRole
+          Condition:
+            StringEquals:
+              aws:SourceAccount: !Sub ${AWS::AccountId}
+            ArnLike:
+              aws:SourceArn: !Sub arn:aws:ssm:*:${AWS::AccountId}:automation-execution/*
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonSSMAutomationRole
+      Path: "/"
+      RoleName: AutomationServiceRole
+
 Outputs:
   S3BucketName:
-    Description: 'Name of the S3 bucket'
+    Description: Name of the S3 bucket
     Value: !Ref MyS3Bucket
+  CloudFrontDistributionID:
+    Description: CloudFront Distribution ID
+    Value: !Ref MyCloudFrontDistribution
   S3BucketArn:
     Description: 'ARN of the S3 bucket'
     Value: !GetAtt MyS3Bucket.Arn
