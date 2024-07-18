@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template to create AWS Systems Manager Automation document for managing resources and automating AMI production.
+
+Resources:
+  LinuxAmiAutomationDocument:
+    Type: 'AWS::SSM::Document'
+    Properties:
+      DocumentType: 'Automation'
+      DocumentFormat: 'YAML'
+      Content:
+        schemaVersion: '0.3'
+        description: 'Automation document to update Linux AMI from the AWS Marketplace'
+        mainSteps:
+          - name: updateLinuxAmi
+            action: 'aws:executeAutomation'
+            inputs:
+              DocumentName: 'AWS-UpdateLinuxAmi'
+              Parameters:
+                SourceAmiId: '{{SourceAmiId}}'
+                InstanceType: '{{InstanceType}}'
+                AutomationAssumeRole: '{{AutomationAssumeRole}}'
+
+  WindowsAmiAutomationDocument:
+    Type: 'AWS::SSM::Document'
+    Properties:
+      DocumentType: 'Automation'
+      DocumentFormat: 'YAML'
+      Content:
+        schemaVersion: '0.3'
+        description: 'Automation document to update Windows AMI from the AWS Marketplace'
+        mainSteps:
+          - name: updateWindowsAmi
+            action: 'aws:executeAutomation'
+            inputs:
+              DocumentName: 'AWS-UpdateWindowsAmi'
+              Parameters:
+                SourceAmiId: '{{SourceAmiId}}'
+                InstanceType: '{{InstanceType}}'
+                AutomationAssumeRole: '{{AutomationAssumeRole}}'
+
+  CustomAmiAutomationDocument:
+    Type: 'AWS::SSM::Document'
+    Properties:
+      DocumentType: 'Automation'
+      DocumentFormat: 'YAML'
+      Content:
+        schemaVersion: '0.3'
+        description: 'Automation document to create custom AMI'
+        mainSteps:
+          - name: createCustomAmi
+            action: 'aws:runCommand'
+            inputs:
+              DocumentName: 'AWS-RunShellScript'
+              Parameters:
+                commands:
+                  - |
+                    #!/bin/bash
+                    # Add custom script commands here to create AMI
+                    # Example:
+                    # aws ec2 create-image --instance-id {{InstanceId}} --name "CustomAmi" --no-reboot
+                InstanceIds: '{{InstanceId}}'
+                TimeoutSeconds: 3600
+
+  AutomationRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 'ssm.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'AutomationPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ec2:CreateImage'
+                  - 'ec2:DescribeInstances'
+                  - 'ec2:DescribeImages'
+                  - 'ssm:SendCommand'
+                  - 'ssm:ListCommandInvocations'
+                Resource: '*'
