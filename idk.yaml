@@ -32,7 +32,15 @@ Parameters:
   KeyName:
     Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
     Type: 'AWS::EC2::KeyPair::KeyName'
-    ConstraintDescription: must be the name of an existing EC2 KeyPair. 
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+  GlueDatabaseName:
+    Type: String
+    Default: ssm_inventory_db
+    Description: Name of the Glue database for SSM Inventory
+  AthenaWorkGroupName:
+    Type: String
+    Default: SSMWorkGroup
+    Description: Name of the Athena Workgroup for querying SSM Inventory
 
 Resources:
   MyS3Bucket:
@@ -172,7 +180,6 @@ Resources:
         - Key: AppManagerCFNStackKey
           Value: "WebsiteRedesign"
 
-
   SSMRole:
     Type: 'AWS::IAM::Role'
     Properties:
@@ -196,6 +203,83 @@ Resources:
       Path: '/'
       Roles:
         - !Ref SSMRole
+
+  SSMInventoryRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: SSMInventoryPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                Resource: !Sub 'arn:aws:s3:::${MyS3Bucket}/*'
+
+  SSMInventory:
+    Type: 'AWS::SSM::ResourceDataSync'
+    Properties:
+      SyncName: SSMInventorySync
+      SyncSource:
+        SourceType: 'AWS::SSM::ResourceDataSync'
+        SourceRegions:
+          - 'ap-southeast-1'
+      S3Destination:
+        BucketName: !Ref MyS3Bucket
+        SyncFormat: JsonSerDe
+        BucketRegion: 'ap-southeast-1'
+
+
+  AthenaWorkGroup:
+    Type: 'AWS::Athena::WorkGroup'
+    Properties:
+      Name: !Ref AthenaWorkGroupName
+      State: ENABLED
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          OutputLocation: !Sub 's3://${MyS3Bucket}/athena-results/'
+
+  GlueDatabase:
+    Type: 'AWS::Glue::Database'
+    Properties:
+      CatalogId: 680622018867
+      DatabaseInput:
+        Name: !Ref GlueDatabaseName
+
+  GlueTable:
+    Type: 'AWS::Glue::Table'
+    Properties:
+      DatabaseName: !Ref GlueDatabaseName
+      CatalogId: 680622018867
+      TableInput:
+        Name: ssm_inventory
+        StorageDescriptor:
+          Columns:
+            - Name: instance_id
+              Type: string
+            - Name: application_name
+              Type: string
+            - Name: version
+              Type: string
+            - Name: publisher
+              Type: string
+            - Name: installed_time
+              Type: timestamp
+          Location: !Sub 's3://${MyS3Bucket}/ssm-inventory/'
+          InputFormat: 'org.apache.hadoop.mapred.TextInputFormat'
+          OutputFormat: 'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat'
+          SerdeInfo:
+            SerializationLibrary: 'org.openx.data.jsonserde.JsonSerDe'
+    DependsOn: GlueDatabase
 
   CodePipelineRole:
     Type: 'AWS::IAM::Role'
@@ -368,7 +452,7 @@ Outputs:
     Value: !Sub 'http://${MyCloudFrontDistribution.DomainName}'
     Description: URL for the static website
   PipelineName:
-    Description: 'Name of the CodePipeline' 
+    Description: 'Name of the CodePipeline'
     Value: !Ref MyPipeline
   LambdaExecutionRoleName:
     Description: 'Name of LambdaExecutionRole'
@@ -379,3 +463,9 @@ Outputs:
   InstanceId:
     Description: The Instance ID
     Value: !Ref MyInstance
+  AthenaQueryExample:
+    Description: Example Athena query to retrieve AWS applications from SSM Inventory
+    Value: >-
+      SELECT instance_id, application_name, version, publisher, installed_time
+      FROM ssm_inventory
+      WHERE publisher = 'Amazon Web Services, Inc.'
